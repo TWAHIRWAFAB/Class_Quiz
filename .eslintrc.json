@@ -13,7 +13,7 @@
     "linebreak-style": ["error", "unix"],
     "quotes": ["error", "single"],
     "semi": ["error", "always"],
-    "no-unused-vars": ["warn"],
+    "no-unused-vars": ["warn", { "args": "none" }],
     "no-console": ["warn"]
   },
   "overrides": [
@@ -23,6 +23,13 @@
         "browser": true,
         "node": false
       },
+      "rules": {
+        "no-console": "off",
+        "no-unused-vars": "off"
+      }
+    },
+    {
+      "files": ["src/server.js"],
       "rules": {
         "no-console": "off"
       }
