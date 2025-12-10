@@ -1,0 +1,228 @@
+---
+# Blue-Green Deployment Strategy for Quiz API
+# This file demonstrates how to implement blue-green deployment
+# for zero-downtime releases
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: quiz-api-blue
+  namespace: production
+  labels:
+    app: quiz-api
+    version: blue
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+  selector:
+    app: quiz-api
+    version: blue
+  sessionAffinity: None
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quiz-api-green
+  namespace: production
+  labels:
+    app: quiz-api
+    version: green
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+  selector:
+    app: quiz-api
+    version: green
+  sessionAffinity: None
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quiz-api
+  namespace: production
+  labels:
+    app: quiz-api
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      protocol: TCP
+  selector:
+    app: quiz-api
+    version: blue  # Switch between 'blue' and 'green' for deployments
+
+---
+# Blue Deployment - Currently Active
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quiz-api-blue
+  namespace: production
+  labels:
+    app: quiz-api
+    version: blue
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: quiz-api
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: quiz-api
+        version: blue
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - quiz-api
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: quiz-api
+          image: ghcr.io/twahirwafab/class_quiz:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 2
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+# Green Deployment - Staging / Standby
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quiz-api-green
+  namespace: production
+  labels:
+    app: quiz-api
+    version: green
+spec:
+  replicas: 0  # Start with 0 replicas, scale up when deploying
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: quiz-api
+      version: green
+  template:
+    metadata:
+      labels:
+        app: quiz-api
+        version: green
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - quiz-api
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: quiz-api
+          image: ghcr.io/twahirwafab/class_quiz:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 2
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

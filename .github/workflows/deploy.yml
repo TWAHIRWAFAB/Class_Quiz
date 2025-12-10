@@ -1,0 +1,205 @@
+name: Continuous Deployment
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., v1.0.0)'
+        required: true
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: ${{ inputs.environment || 'production' }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION=${{ github.event.release.tag_name }}
+            ENV="production"
+          else
+            VERSION=${{ inputs.version }}
+            ENV=${{ inputs.environment }}
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "ENVIRONMENT=$ENV" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Verify cluster connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Pre-deployment checks
+        run: |
+          echo "Checking if namespace exists..."
+          kubectl get namespace ${{ env.ENVIRONMENT }} || \
+            (echo "Creating namespace..." && kubectl create namespace ${{ env.ENVIRONMENT }})
+          
+          echo "Checking pod resource availability..."
+          kubectl describe nodes
+
+      - name: Rolling update deployment
+        run: |
+          echo "🔄 Starting rolling update to version ${{ env.VERSION }}..."
+          kubectl set image deployment/quiz-api \
+            quiz-api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }} \
+            -n ${{ env.ENVIRONMENT }} \
+            --record
+
+      - name: Wait for rollout
+        run: |
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/quiz-api \
+            -n ${{ env.ENVIRONMENT }} \
+            --timeout=5m
+
+      - name: Verify deployment health
+        run: |
+          echo "🏥 Verifying deployment health..."
+          kubectl get deployment quiz-api -n ${{ env.ENVIRONMENT }}
+          kubectl get pods -n ${{ env.ENVIRONMENT }} -l app=quiz-api
+          
+          echo ""
+          echo "🔍 Checking pod status..."
+          kubectl get pods -n ${{ env.ENVIRONMENT }} -l app=quiz-api \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}'
+
+      - name: Test deployed application
+        run: |
+          echo "🧪 Testing deployed application..."
+          
+          # Get a pod name
+          POD_NAME=$(kubectl get pods -n ${{ env.ENVIRONMENT }} \
+            -l app=quiz-api -o jsonpath='{.items[0].metadata.name}')
+          
+          echo "Testing pod: $POD_NAME"
+          
+          # Port forward and test
+          kubectl port-forward -n ${{ env.ENVIRONMENT }} pod/$POD_NAME 3000:3000 &
+          PF_PID=$!
+          sleep 2
+          
+          # Test health endpoint
+          echo "Testing /health endpoint..."
+          curl -f http://localhost:3000/health || exit 1
+          
+          # Test API endpoint
+          echo "Testing /api/questions endpoint..."
+          curl -f http://localhost:3000/api/questions || exit 1
+          
+          kill $PF_PID
+
+      - name: Display deployment info
+        if: always()
+        run: |
+          echo "📊 Deployment Summary"
+          echo "===================="
+          echo "Environment: ${{ env.ENVIRONMENT }}"
+          echo "Version: ${{ env.VERSION }}"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
+          echo ""
+          echo "Replica Status:"
+          kubectl get deployment quiz-api -n ${{ env.ENVIRONMENT }} \
+            -o jsonpath='{.spec.replicas} desired, {.status.replicas} current, {.status.readyReplicas} ready'
+          echo ""
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed, initiating rollback..."
+          kubectl rollout undo deployment/quiz-api -n ${{ env.ENVIRONMENT }}
+          kubectl rollout status deployment/quiz-api -n ${{ env.ENVIRONMENT }} --timeout=5m
+          echo "✅ Rollback completed"
+
+      - name: Send deployment notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} Deployment ${{ job.status }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ job.status == 'success' && '✅ Deployment Successful' || '❌ Deployment Failed' }}\n*Version:* ${{ env.VERSION }}\n*Environment:* ${{ env.ENVIRONMENT }}\n*Repository:* ${{ github.repository }}"
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Workflow"
+                      },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  post-deployment-verification:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Monitor deployment metrics
+        run: |
+          echo "📈 Monitoring deployment metrics..."
+          echo ""
+          echo "Pod resource usage:"
+          kubectl top pods -n production -l app=quiz-api || echo "Metrics not available yet"
+          echo ""
+          echo "Node resources:"
+          kubectl top nodes || echo "Metrics not available yet"
