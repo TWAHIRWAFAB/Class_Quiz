@@ -35,8 +35,8 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: quiz-api
-          image: ghcr.io/yourrepo/online-quiz-api:latest
-          imagePullPolicy: Always
+          image: ghcr.io/twahirwafab/class_quiz:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 3000
@@ -69,13 +69,6 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 2
-          securityContext:
-            runAsNonRoot: true
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop:
-                - ALL
           volumeMounts:
             - name: tmp
               mountPath: /tmp
