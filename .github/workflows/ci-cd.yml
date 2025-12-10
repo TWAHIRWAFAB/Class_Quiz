@@ -50,6 +50,31 @@ jobs:
           name: Jest Test Results
           path: test-results.json
           reporter: 'jest-json'
+      
+      - name: Send email notification on test failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "❌ CI/CD Pipeline Test Failed - ${{ github.repository }}"
+          to: twahirwafabrice12@gmail.com
+          from: ${{ secrets.EMAIL_USERNAME }}
+          body: |
+            Test Suite Failed!
+            
+            Repository: ${{ github.repository }}
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            Author: ${{ github.actor }}
+            
+            Test Results: ${{ job.status }}
+            
+            View full details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            
+            Please check the failing tests immediately.
 
   build:
     needs: [lint, test]
